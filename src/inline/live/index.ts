@@ -1,18 +1,19 @@
 import { syntaxTree } from "@codemirror/language";
 import { SyntaxNode } from "@lezer/common";
 import {
-  RangeSetBuilder,
   EditorSelection,
+  RangeSetBuilder,
   SelectionRange,
 } from "@codemirror/state";
 import {
   Decoration,
   DecorationSet,
-  ViewUpdate,
-  PluginValue,
-  PluginSpec,
   EditorView,
+  PluginSpec,
+  PluginValue,
   ViewPlugin,
+  ViewUpdate,
+  WidgetType,
 } from "@codemirror/view";
 import { editorLivePreviewField } from "obsidian";
 import { CountWidget, COUNT_REGEX } from "./count";
@@ -24,53 +25,116 @@ import { SpaceWidget, SPACE_REGEX } from "./space";
 import { getInlineCodeSpan, isInlineCodeNode } from "./shared";
 import Plugin from "../../main";
 
-type BuildMeta = string;
+type WidgetKind =
+  | "dice"
+  | "count"
+  | "countlimit"
+  | "track"
+  | "clock"
+  | "space";
+
+type Candidate = {
+  from: number;
+  to: number;
+  spanFrom: number;
+  spanTo: number;
+  node: SyntaxNode;
+  text: string;
+  meta: string;
+  kind: WidgetKind;
+  decoration?: Decoration;
+  decorated: boolean;
+};
+
+type PositionRange = { from: number; to: number };
 
 let pluginRef: Plugin;
 
 // Live preview mode inline elements
 class TrackPlugin implements PluginValue {
   decorations: DecorationSet = Decoration.none;
-  previousBuildMeta: BuildMeta[] = [];
-  spaceStore: Record<BuildMeta, number> = {};
+  candidates: Candidate[] = [];
+  lastSelection?: EditorSelection;
+  lastHighlight?: boolean;
+  cacheValid = false;
+  spaceStore: Record<string, number> = {};
   spaceStoreIndex: Record<number, number> = {};
 
   constructor(view: EditorView) {
-    this.buildDecorations(view);
+    this.rebuildDecorations(
+      view,
+      pluginRef?.settings?.inlineProgressHighlight ?? true,
+    );
   }
 
   update(update: ViewUpdate) {
     const isLivePreview = update.state.field(editorLivePreviewField);
-    const shouldDisable =
-      !pluginRef?.settings?.inlineCounters || !isLivePreview;
-    const shouldUpdate =
+    const isEnabled = !!pluginRef?.settings?.inlineCounters && isLivePreview;
+
+    if (!isEnabled) {
+      this.decorations = Decoration.none;
+      this.candidates = [];
+      this.lastSelection = undefined;
+      this.cacheValid = false;
+      return;
+    }
+
+    const highlight = pluginRef?.settings?.inlineProgressHighlight ?? true;
+    const candidatesAreStale =
+      !this.cacheValid ||
       update.docChanged ||
       update.viewportChanged ||
-      (update.selectionSet && this.selectionAffectsWidgets(update));
+      highlight !== this.lastHighlight;
 
-    if (shouldDisable) {
-      this.decorations = Decoration.none;
-      this.previousBuildMeta = [];
-    } else if (shouldUpdate) {
-      this.buildDecorations(update.view);
+    if (candidatesAreStale) {
+      this.rebuildDecorations(update.view, highlight);
+      return;
+    }
+
+    if (update.selectionSet) {
+      const previousSelection =
+        this.lastSelection ?? update.startState.selection;
+      this.updateSelection(previousSelection, update.state.selection);
+      this.lastSelection = update.state.selection;
     }
   }
 
   destroy() {}
 
-  buildDecorations(view: EditorView) {
-    type Candidate = {
-      from: number;
-      to: number;
-      node: SyntaxNode;
-      text: string;
-      meta: BuildMeta;
-      kind: "dice" | "count" | "countlimit" | "track" | "clock" | "space";
-    };
+  private rebuildDecorations(view: EditorView, highlight: boolean) {
+    const candidates = this.collectCandidates(view);
+    const builder = new RangeSetBuilder<Decoration>();
+    let widgetIndex = 0;
+
+    for (const candidate of candidates) {
+      const widget = this.createWidget(candidate, highlight, widgetIndex);
+      if (candidate.kind === "space") widgetIndex++;
+
+      candidate.decoration = Decoration.replace({ widget });
+      candidate.decorated = !this.isRangeSelected(
+        candidate.spanFrom,
+        candidate.spanTo,
+        view.state.selection,
+      );
+
+      if (candidate.decorated) {
+        builder.add(candidate.from, candidate.to, candidate.decoration);
+      }
+    }
+
+    this.candidates = candidates;
+    this.decorations = builder.finish();
+    this.lastSelection = view.state.selection;
+    this.lastHighlight = highlight;
+    this.cacheValid = true;
+  }
+
+  private collectCandidates(view: EditorView): Candidate[] {
     const candidates: Candidate[] = [];
-    const selection = view.state.selection;
     const seenSpans = new Set<string>();
 
+    // Keep the shared node-name/span helpers here so nested blocks such as
+    // callouts, lists, and blockquotes follow the same discovery path.
     for (const { from, to } of view.visibleRanges) {
       syntaxTree(view.state).iterate({
         from,
@@ -79,155 +143,221 @@ class TrackPlugin implements PluginValue {
           if (!isInlineCodeNode(node.type.name)) return;
 
           const span = getInlineCodeSpan(view.state.doc, node.from, node.to);
-          const from = span.from;
-          const to = span.to;
-          const spanKey = `${from}:${to}`;
+          const spanKey = `${span.from}:${span.to}`;
           if (seenSpans.has(spanKey)) return;
           seenSpans.add(spanKey);
 
-          if (this.isRangeSelected(from, to, selection)) {
-            return;
-          }
-
           const text = span.text.trim();
-          const meta = `${from}:${to}:${text}`;
+          const kind = this.getWidgetKind(text);
+          if (!kind) return;
 
-          let kind: Candidate["kind"] | undefined;
-          if (DICE_REGEX.test(text)) kind = "dice";
-          else if (COUNT_REGEX.test(text)) kind = "count";
-          else if (COUNT_LIMIT_REGEX.test(text)) kind = "countlimit";
-          else if (TRACK_REGEX.test(text)) kind = "track";
-          else if (CLOCK_REGEX.test(text)) kind = "clock";
-          else if (SPACE_REGEX.test(text)) kind = "space";
-
-          if (kind) {
-            candidates.push({
-              from: node.from,
-              to: node.to,
-              node: node.node,
-              text,
-              meta,
-              kind,
-            });
-          }
+          candidates.push({
+            from: node.from,
+            to: node.to,
+            spanFrom: span.from,
+            spanTo: span.to,
+            node: node.node,
+            text,
+            meta: `${span.from}:${span.to}:${text}`,
+            kind,
+            decorated: false,
+          });
         },
       });
     }
 
-    const buildMeta = candidates.map(({ meta, kind }) =>
-      kind === "track"
-        ? `${meta}:highlight=${pluginRef?.settings?.inlineProgressHighlight ?? true}`
-        : meta,
-    );
-    if (!this.isMetaChanged(buildMeta)) return;
-    this.previousBuildMeta = buildMeta;
-
-    const builder = new RangeSetBuilder<Decoration>();
-    let widgetIndex = 0;
-    for (const candidate of candidates) {
-      const { node, text, kind, meta, from, to } = candidate;
-      let widget;
-      switch (kind) {
-        case "dice":
-          widget = new DiceWidget({ originalNode: node, originalText: text });
-          break;
-        case "count":
-          widget = new CountWidget({ originalNode: node, originalText: text });
-          break;
-        case "countlimit":
-          widget = new CountLimitWidget({ originalNode: node, originalText: text });
-          break;
-        case "track":
-          widget = new TrackWidget({
-            originalNode: node,
-            originalText: text,
-            highlight: pluginRef?.settings?.inlineProgressHighlight ?? true,
-          });
-          break;
-        case "clock":
-          widget = new ClockWidget({ originalNode: node, originalText: text });
-          break;
-        case "space": {
-          const thisWidgetIndex = widgetIndex++;
-          widget = new SpaceWidget({
-            originalNode: node,
-            originalText: text,
-            initialWidth:
-              this.spaceStore[meta] || this.spaceStoreIndex[thisWidgetIndex] || 0,
-            updateInitialWidth: (width: number) => {
-              this.spaceStore[meta] = width;
-              this.spaceStoreIndex[thisWidgetIndex] = width;
-            },
-          });
-          break;
-        }
-      }
-      builder.add(from, to, Decoration.replace({ widget }));
-    }
-
-    this.decorations = builder.finish();
+    return candidates.sort((left, right) => left.spanFrom - right.spanFrom);
   }
 
-  selectionAffectsWidgets(update: ViewUpdate): boolean {
-    const selections = [update.startState.selection, update.state.selection];
-    for (const meta of this.previousBuildMeta) {
-      const [fromText, toText] = meta.split(":", 3);
-      const from = Number(fromText);
-      const to = Number(toText);
-      if (
-        selections.some((selection) =>
-          this.isRangeSelected(from, to, selection),
-        )
-      ) {
-        return true;
-      }
-    }
+  private getWidgetKind(text: string): WidgetKind | undefined {
+    if (DICE_REGEX.test(text)) return "dice";
+    if (COUNT_REGEX.test(text)) return "count";
+    if (COUNT_LIMIT_REGEX.test(text)) return "countlimit";
+    if (TRACK_REGEX.test(text)) return "track";
+    if (CLOCK_REGEX.test(text)) return "clock";
+    if (SPACE_REGEX.test(text)) return "space";
+    return undefined;
+  }
 
-    for (const state of [update.startState, update.state]) {
-      let affected = false;
-      const selection = state.selection;
-      for (const { from, to } of update.view.visibleRanges) {
-        syntaxTree(state).iterate({
-          from,
-          to,
-          enter: (node) => {
-            if (affected || !isInlineCodeNode(node.type.name)) return;
-            const span = getInlineCodeSpan(state.doc, node.from, node.to);
-            const text = span.text.trim();
-            const isWidget =
-              DICE_REGEX.test(text) ||
-              COUNT_REGEX.test(text) ||
-              COUNT_LIMIT_REGEX.test(text) ||
-              TRACK_REGEX.test(text) ||
-              CLOCK_REGEX.test(text) ||
-              SPACE_REGEX.test(text);
-            if (isWidget && this.isRangeSelected(span.from, span.to, selection)) {
-              affected = true;
-            }
+  private createWidget(
+    candidate: Candidate,
+    highlight: boolean,
+    widgetIndex: number,
+  ): WidgetType {
+    const { node, text, kind, meta } = candidate;
+
+    switch (kind) {
+      case "dice":
+        return new DiceWidget({ originalNode: node, originalText: text });
+      case "count":
+        return new CountWidget({ originalNode: node, originalText: text });
+      case "countlimit":
+        return new CountLimitWidget({ originalNode: node, originalText: text });
+      case "track":
+        return new TrackWidget({
+          originalNode: node,
+          originalText: text,
+          highlight,
+        });
+      case "clock":
+        return new ClockWidget({ originalNode: node, originalText: text });
+      case "space":
+        return new SpaceWidget({
+          originalNode: node,
+          originalText: text,
+          initialWidth:
+            this.spaceStore[meta] || this.spaceStoreIndex[widgetIndex] || 0,
+          updateInitialWidth: (width: number) => {
+            this.spaceStore[meta] = width;
+            this.spaceStoreIndex[widgetIndex] = width;
           },
         });
-        if (affected) return true;
+      default: {
+        const unreachable: never = kind;
+        return unreachable;
       }
     }
-    return false;
   }
 
-  isRangeSelected(
+  private updateSelection(
+    previousSelection: EditorSelection,
+    selection: EditorSelection,
+  ) {
+    const affectedCandidates = this.getAffectedCandidates(
+      previousSelection,
+      selection,
+    );
+
+    for (const candidate of affectedCandidates) {
+      const shouldDecorate = !this.isRangeSelected(
+        candidate.spanFrom,
+        candidate.spanTo,
+        selection,
+      );
+      if (shouldDecorate === candidate.decorated) continue;
+
+      const decoration = candidate.decoration;
+      if (!decoration) continue;
+
+      if (shouldDecorate) {
+        this.decorations = this.decorations.update({
+          add: [decoration.range(candidate.from, candidate.to)],
+        });
+      } else {
+        this.decorations = this.decorations.update({
+          filterFrom: candidate.from,
+          filterTo: candidate.to,
+          filter: (from, to, value) =>
+            from !== candidate.from ||
+            to !== candidate.to ||
+            value !== decoration,
+        });
+      }
+
+      candidate.decorated = shouldDecorate;
+    }
+  }
+
+  /**
+   * Find only spans that could change visibility. For the normal single-range
+   * selection, movement within an overlapping selection changes visibility
+   * only near its endpoints. Multi-range selections use a straightforward
+   * cached-candidate pass; neither path reparses the syntax tree.
+   */
+  private getAffectedCandidates(
+    previousSelection: EditorSelection,
+    selection: EditorSelection,
+  ): Candidate[] {
+    if (
+      previousSelection.ranges.length !== 1 ||
+      selection.ranges.length !== 1
+    ) {
+      return this.candidates;
+    }
+
+    const previous = previousSelection.ranges[0];
+    const next = selection.ranges[0];
+    const intervals: PositionRange[] = [];
+
+    if (previous.empty && next.empty) {
+      intervals.push(
+        { from: previous.head, to: previous.head },
+        { from: next.head, to: next.head },
+      );
+      return this.findCandidatesInRanges(intervals);
+    }
+
+    const overlaps = previous.from <= next.to && next.from <= previous.to;
+    if (overlaps) {
+      if (previous.from !== next.from) {
+        intervals.push({
+          from: Math.min(previous.from, next.from),
+          to: Math.max(previous.from, next.from),
+        });
+      }
+      if (previous.to !== next.to) {
+        intervals.push({
+          from: Math.min(previous.to, next.to),
+          to: Math.max(previous.to, next.to),
+        });
+      }
+    } else {
+      intervals.push(
+        { from: previous.from, to: previous.to },
+        { from: next.from, to: next.to },
+      );
+    }
+
+    return this.findCandidatesInRanges(intervals);
+  }
+
+  private findCandidatesInRanges(intervals: PositionRange[]): Candidate[] {
+    const found = new Set<Candidate>();
+
+    for (const interval of intervals) {
+      let low = 0;
+      let high = this.candidates.length;
+
+      // Inline code spans are ordered and non-overlapping in the syntax tree.
+      // Binary search avoids checking every candidate for ordinary cursor moves.
+      while (low < high) {
+        const middle = (low + high) >>> 1;
+        if (this.candidates[middle].spanTo < interval.from) {
+          low = middle + 1;
+        } else {
+          high = middle;
+        }
+      }
+
+      for (
+        let index = low;
+        index < this.candidates.length &&
+        this.candidates[index].spanFrom <= interval.to;
+        index++
+      ) {
+        found.add(this.candidates[index]);
+      }
+    }
+
+    return Array.from(found);
+  }
+
+  private isRangeSelected(
     from: number,
     to: number,
     selection: EditorSelection,
   ): boolean {
-    return !!selection.ranges.find(
-      (range: SelectionRange) => range.from <= to && range.to >= from,
+    return !!selection.ranges.find((range: SelectionRange) =>
+      this.rangeIntersects(from, to, range),
     );
   }
 
-  isMetaChanged(buildMeta: BuildMeta[]): boolean {
-    if (buildMeta.length !== this.previousBuildMeta.length) return true;
-    for (const index in buildMeta) {
-      if (buildMeta[index] !== this.previousBuildMeta[index]) return true;
-    }
-    return false;
+  private rangeIntersects(
+    from: number,
+    to: number,
+    range: SelectionRange,
+  ): boolean {
+    return range.from <= to && range.to >= from;
   }
 }
 
