@@ -1,6 +1,6 @@
 {
   "name": "inline-rpg-tools",
-  "version": "1.0.0",
+  "version": "0.1.1",
   "description": "Interactive inline RPG tools for Obsidian (https://obsidian.md)",
   "main": "./dist/main.js",
   "scripts": {
