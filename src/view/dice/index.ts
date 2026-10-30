@@ -1,1 +1,0 @@
-export { DiceView } from "./view";

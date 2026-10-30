@@ -19,10 +19,20 @@ export const soloToolkitPostprocessor = (plugin: Plugin) => {
     const file = plugin.app.vault.getAbstractFileByPath(ctx.sourcePath);
     if (!(file instanceof TFile)) return;
     const section = ctx.getSectionInfo(element);
-    if (!section) return;
+    // if (!section) return;
 
-    const lineStart = section.lineStart;
-    const lineEnd = section.lineEnd;
+    const sourceElement =
+      element.closest<HTMLElement>('[data-kanban-source-line-start]') ?? element;
+    const kanbanLineStart = Number(sourceElement.dataset.kanbanSourceLineStart);
+    const kanbanLineEnd = Number(sourceElement.dataset.kanbanSourceLineEnd);
+    const hasKanbanSourceRange =
+      Number.isFinite(kanbanLineStart) && Number.isFinite(kanbanLineEnd);
+    const lineStart = hasKanbanSourceRange
+      ? kanbanLineStart + (section?.lineStart ?? 0)
+      : (section?.lineStart ?? -1);
+    const lineEnd = hasKanbanSourceRange
+      ? kanbanLineStart + (section?.lineEnd ?? kanbanLineEnd - kanbanLineStart)
+      : (section?.lineEnd ?? -1);
     const indexMap = {
       count: 0,
       countLimit: 0,
@@ -84,6 +94,7 @@ export const soloToolkitPostprocessor = (plugin: Plugin) => {
           lineEnd,
           index: indexMap.track++,
           originalText: mdText,
+          highlight: plugin.settings.inlineProgressHighlight ?? true,
         });
         node.replaceWith(widget.toDOM());
       }

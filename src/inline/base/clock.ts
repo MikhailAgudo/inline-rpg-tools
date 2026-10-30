@@ -113,7 +113,7 @@ export class ClockWidgetBase implements BaseWidget {
     centerY: number,
     size: number,
     index: number,
-    step: number
+    step: number,
   ): string {
     const angleA = -index * step + 90;
     const angleB = (-index - 1) * step + 90;
@@ -202,34 +202,35 @@ export class ClockWidgetBase implements BaseWidget {
 
     this.generateSvg();
 
-    const menu = createMenu([
+    const showMenu = (event: MouseEvent) => {
+      createMenu([
       {
         title: "Advance",
-        onClick: () => {
+        onClick: (event) => {
           this.addValue(1);
-          onChange?.();
+          onChange?.(event);
         },
       },
       {
         title: "Subtract",
-        onClick: () => {
+        onClick: (event) => {
           this.addValue(-1);
-          onChange?.();
+          onChange?.(event);
         },
       },
       "-",
       {
         title: "Fill",
-        onClick: () => {
+        onClick: (event) => {
           this.setValue(this.max);
-          onChange?.();
+          onChange?.(event);
         },
       },
       {
         title: "Reset",
-        onClick: () => {
+        onClick: (event) => {
           this.setValue(0);
-          onChange?.();
+          onChange?.(event);
         },
       },
       "-",
@@ -239,17 +240,17 @@ export class ClockWidgetBase implements BaseWidget {
           {
             title: "Default",
             checked: this.color === "",
-            onClick: () => {
+            onClick: (event) => {
               this.color = "";
-              onChange?.();
+              onChange?.(event);
             },
           },
           ...KNOWN_COLORS.map((color) => ({
             title: capitalize(color),
             checked: this.color === color,
-            onClick: () => {
+            onClick: (event: MouseEvent) => {
               this.color = color;
-              onChange?.();
+              onChange?.(event);
             },
           })),
         ],
@@ -260,40 +261,40 @@ export class ClockWidgetBase implements BaseWidget {
           {
             title: "Default",
             checked: this.size === SIZE_DEFAULT,
-            onClick: () => {
+            onClick: (event) => {
               this.size = SIZE_DEFAULT;
-              onChange?.();
+              onChange?.(event);
             },
           },
           {
             title: "Small",
             checked: this.size === SIZE_SMALL,
-            onClick: () => {
+            onClick: (event) => {
               this.size = SIZE_SMALL;
-              onChange?.();
+              onChange?.(event);
             },
           },
           {
             title: "Large",
             checked: this.size === SIZE_LARGE,
-            onClick: () => {
+            onClick: (event) => {
               this.size = SIZE_LARGE;
-              onChange?.();
+              onChange?.(event);
             },
           },
           "-",
           {
             title: "Increase",
-            onClick: () => {
+            onClick: (event) => {
               this.size += 8;
-              onChange?.();
+              onChange?.(event);
             },
           },
           {
             title: "Decrease",
-            onClick: () => {
+            onClick: (event) => {
               this.size -= 8;
-              onChange?.();
+              onChange?.(event);
             },
           },
         ],
@@ -307,7 +308,8 @@ export class ClockWidgetBase implements BaseWidget {
             },
           }
         : undefined,
-    ]);
+      ]).showAtMouseEvent(event);
+    };
 
     this.btnEl.onclick = (event) => {
       event.preventDefault();
@@ -317,12 +319,12 @@ export class ClockWidgetBase implements BaseWidget {
       } else {
         this.addValue(-1);
       }
-      onChange?.();
+      onChange?.(event);
     };
     this.btnEl.oncontextmenu = (event) => {
       event.preventDefault();
       event.stopPropagation();
-      menu.showAtMouseEvent(event);
+      showMenu(event);
     };
   }
 }

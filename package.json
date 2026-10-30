@@ -1,18 +1,24 @@
 {
-  "name": "alexkurowski/solo-toolkit",
-  "version": "0.7.10",
-  "description": "Solo RPG toolkit for Obsidian (https://obsidian.md)",
-  "main": "./dist/api.js",
+  "name": "inline-rpg-tools",
+  "version": "1.0.0",
+  "description": "Interactive inline RPG tools for Obsidian (https://obsidian.md)",
+  "main": "./dist/main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs watch",
     "build": "tsc --noEmit -skipLibCheck && node esbuild.config.mjs",
-    "deploy": "rm -rf ./dist/solo-rpg-toolkit && mkdir -p dist/solo-rpg-toolkit && cp dist/main.js dist/solo-rpg-toolkit && cp dist/styles.css dist/solo-rpg-toolkit && cp manifest.json dist/solo-rpg-toolkit",
-    "lint": "tsc --noEmit && eslint ./src",
-    "version": "ruby tasks/version.rb",
-    "release": "ruby tasks/release.rb"
+    "deploy": "rm -rf ./dist/inline-rpg-tools && mkdir -p dist/inline-rpg-tools && cp dist/main.js dist/inline-rpg-tools && cp dist/styles.css dist/inline-rpg-tools && cp manifest.json dist/inline-rpg-tools",
+    "lint": "tsc --noEmit && eslint ./src"
   },
-  "keywords": [],
-  "author": "Alex Kurowski",
+  "keywords": [
+    "obsidian",
+    "obsidian-plugin",
+    "ttrpg",
+    "dice",
+    "counter",
+    "progress-clock",
+    "inline"
+  ],
+  "author": "Mikhail Agudo",
   "license": "MIT",
   "devDependencies": {
     "@codemirror/language": "^6.10.1",

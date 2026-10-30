@@ -1,31 +1,31 @@
 import { SyntaxNode } from "@lezer/common";
 import { EditorView, WidgetType } from "@codemirror/view";
 import { CountLimitWidgetBase, COUNT_LIMIT_REGEX } from "../base";
-import { focusOnNode } from "./shared";
+import { focusOnNode, replaceInlineCode } from "./shared";
 
 export { COUNT_LIMIT_REGEX };
 
 export class CountLimitWidget extends WidgetType {
   base: CountLimitWidgetBase;
   node: SyntaxNode;
+  originalText: string;
 
   constructor(opts: { originalNode: SyntaxNode; originalText: string }) {
     super();
 
     this.base = new CountLimitWidgetBase(opts);
     this.node = opts.originalNode;
+    this.originalText = opts.originalText;
+  }
+
+  eq(widget: CountLimitWidget): boolean {
+    const equal = this.originalText === widget.originalText;
+    if (equal) this.node = widget.node;
+    return equal;
   }
 
   updateDoc(view: EditorView) {
-    view.dispatch({
-      changes: [
-        {
-          from: this.node.from,
-          to: this.node.to,
-          insert: this.base.getText(),
-        },
-      ],
-    });
+    replaceInlineCode(view, this.node, (wrap) => this.base.getText(wrap));
   }
 
   toDOM(view: EditorView): HTMLElement {

@@ -1,6 +1,9 @@
-export * from "./array";
-export * from "./copy";
-export * from "./fns";
-export * from "./math";
-export * from "./word";
-export * from "./fs";
+export const identity = <T>(value: T): T => value;
+
+export const capitalize = (value: string): string => {
+  if (value) {
+    return value[0].toUpperCase() + value.substring(1);
+  } else {
+    return "";
+  }
+};

@@ -8,6 +8,7 @@ export { SPACE_REGEX };
 export class SpaceWidget extends WidgetType {
   base: SpaceWidgetBase;
   node: SyntaxNode;
+  originalText: string;
 
   constructor(opts: {
     originalNode: SyntaxNode;
@@ -19,6 +20,13 @@ export class SpaceWidget extends WidgetType {
 
     this.base = new SpaceWidgetBase(opts);
     this.node = opts.originalNode;
+    this.originalText = opts.originalText;
+  }
+
+  eq(widget: SpaceWidget): boolean {
+    const equal = this.originalText === widget.originalText;
+    if (equal) this.node = widget.node;
+    return equal;
   }
 
   toDOM(view: EditorView): HTMLElement {

@@ -1,17 +1,17 @@
 import { setTooltip } from "obsidian";
-import { capitalize, identity, nrandom, rollIntervals } from "src/utils";
+import { capitalize, identity, nrollDetails, rollIntervals } from "src/utils";
 import { createMenu, KNOWN_COLORS } from "./shared";
 import { BaseWidget, DomOptions } from "./types";
 
 export const DICE_REGEX =
-  /^`!?(sm|lg|s|l)?(\d+)?d(4|6|8|10|12|20|100|F)([+-]\d+)?([|,]#?[\w\d]+)*(( = |: )[+-]?\d+)?`$/;
+  /^`!?(sm|lg|s|l)?(\d+)?d([1-9]\d*|F)(\/[ad])?([+-]\d+)?([|,]#?[\w\d]+)*(( = |: )[^`]+)?`$/;
 export const DICE_REGEX_G =
-  /`!?(sm|lg|s|l)?(\d+)?d(4|6|8|10|12|20|100|F)([+-]\d+)?([|,]#?[\w\d]+)*(( = |: )[+-]?\d+)?`/g;
+  /`!?(sm|lg|s|l)?(\d+)?d([1-9]\d*|F)(\/[ad])?([+-]\d+)?([|,]#?[\w\d]+)*(( = |: )[^`]+)?`/g;
 
 const MIN_SIZE = 10;
-const SIZE_DEFAULT = 36;
-const SIZE_SMALL = 30;
-const SIZE_LARGE = 52;
+const SIZE_DEFAULT = 32;
+const SIZE_SMALL = 26;
+const SIZE_LARGE = 44;
 
 let rollLock = false;
 
@@ -27,6 +27,8 @@ export class DiceWidgetBase implements BaseWidget {
   color: string;
   size: number;
   explicit: boolean;
+  advantage: "a" | "d" | null;
+  rolls: number[] = [];
 
   el: HTMLElement;
   svgEl: SVGElement;
@@ -47,25 +49,32 @@ export class DiceWidgetBase implements BaseWidget {
     this.max = 20;
     this.value = 20;
     this.explicit = false;
+    this.advantage = null;
+    this.rolls = [];
 
     const normalized = text.replace(/^`+|`+$/g, "");
 
     // Split text into parts
     const [controlWithParams, value] = normalized.split(
-      normalized.includes("=") ? " = " : ": "
+      normalized.includes("=") ? " = " : ": ",
     );
     const separator = controlWithParams.includes("|") ? "|" : ",";
     const params: string[] = controlWithParams.split(separator);
     const control: string = params.shift()!;
 
-    const cMatch = control.match(/(!)?(sm|lg|s|l)?(\d+)?d(\d+|F)([+-]\d+)?/);
+    const cMatch = control.match(
+      /(!)?(sm|lg|s|l)?(\d+)?d(\d+|F)(\/[ad])?([+-]\d+)?/,
+    );
     const cDisabled = !!cMatch?.[1];
     const cSize = cMatch?.[2] || "";
     const cQuantity = parseInt(cMatch?.[3] || "");
     const cMax = parseInt(cMatch?.[4] || "");
-    const cAdd = parseInt(cMatch?.[5] || "");
+    const cAdvantage = cMatch?.[5] || "";
+    const cAdd = parseInt(cMatch?.[6] || "");
 
     this.disabled = cDisabled;
+    this.advantage =
+      cAdvantage === "/a" ? "a" : cAdvantage === "/d" ? "d" : null;
     this.quantity = cQuantity || 1;
 
     // Legacy size
@@ -81,13 +90,23 @@ export class DiceWidgetBase implements BaseWidget {
     this.quantity = cQuantity || 1;
     this.max = cMax || 20;
     this.add = cAdd || 0;
-    this.value = parseInt(value || "") || this.quantity * this.max + this.add;
 
     if (cMatch?.[4] === "F") {
       this.type = "fudge";
       this.min = -1;
       this.max = 1;
       this.value = parseInt(value || "") || 0;
+    }
+
+    const valStr = value ? value.trim() : "";
+    const detailMatch = valStr.match(/^((?:-?\d+, )*-?\d+) \((-?\d+)\)$/);
+
+    if (detailMatch) {
+      this.rolls = detailMatch[1].split(", ").map((n) => parseInt(n));
+      this.value = parseInt(detailMatch[2]);
+    } else {
+      const maxVal = this.advantage ? this.max : this.quantity * this.max;
+      this.value = parseInt(valStr) || maxVal + this.add;
     }
 
     if (params) {
@@ -104,7 +123,23 @@ export class DiceWidgetBase implements BaseWidget {
   }
 
   private roll() {
-    this.value = nrandom(this.quantity, this.min, this.max, this.value);
+    const { sum, rolls } = nrollDetails(
+      this.quantity,
+      this.min,
+      this.max,
+      this.value,
+    );
+
+    if (this.advantage === "a") {
+      this.value = Math.max(...rolls);
+    } else if (this.advantage === "d") {
+      this.value = Math.min(...rolls);
+    } else {
+      this.value = sum;
+    }
+
+    this.rolls = rolls;
+
     if (this.add) this.value += this.add;
     this.updateValue();
   }
@@ -143,21 +178,43 @@ export class DiceWidgetBase implements BaseWidget {
     }
 
     this.valueEl.innerText = value;
+
+    if (this.rolls.length > 0 && this.quantity > 1) {
+      const details = `${this.rolls.join(", ")} (${this.value})`;
+      setTooltip(this.el, details, { delay: 0 });
+    } else {
+      const sizeText = [
+        this.quantity > 1 ? this.quantity : "",
+        "d",
+        this.type === "fudge" ? "F" : this.max,
+        this.advantage ? `/${this.advantage}` : "",
+        this.add ? (this.add > 0 ? `+${this.add}` : this.add) : "",
+      ]
+        .filter(identity)
+        .join("");
+      setTooltip(this.el, sizeText, { delay: 0 });
+    }
   }
 
   getText(wrap = ""): string {
+    let valStr = this.value.toString();
+    if (this.rolls.length > 0 && this.quantity > 1) {
+      valStr = `${this.rolls.join(", ")} (${this.value})`;
+    }
+
     return [
       wrap,
       this.disabled ? "!" : "",
       this.quantity > 1 ? this.quantity : "",
       "d",
       this.type === "fudge" ? "F" : this.max,
+      this.advantage ? `/${this.advantage}` : "",
       this.add ? (this.add > 0 ? `+${this.add}` : this.add) : "",
       this.color ? `,${this.color}` : "",
       this.size !== SIZE_DEFAULT ? `,${this.size}` : "",
       this.explicit ? ",show" : "",
       ": ",
-      this.value.toString(),
+      valStr,
       wrap,
     ]
       .filter(identity)
@@ -173,23 +230,76 @@ export class DiceWidgetBase implements BaseWidget {
     const angles: number[] = [];
     if (this.type === "num") {
       switch (this.max) {
+        case 2:
+          // Circle-like 16-sided polygon: d2
+          angles.push(
+            -90, -67.5, -45, -22.5,
+            0, 22.5, 45, 67.5,
+            90, 112.5, 135, 157.5,
+            180, 202.5, 225, 247.5
+          );
+          break;
+        case 3:
         case 4:
+          // Triangle: d3, d4
           angles.push(-90, 30, 150);
           break;
+        case 5:
+          // Elongated hexagon: d5
+          angles.push(0, 30, 150, 180, 210, 330);
+          break;
         case 6:
+          // Box-like quadrilateral: d6
           angles.push(-45, 45, 135, 225);
           break;
+        case 7:
+          // Broad, flat-top pentagon: d7
+          angles.push(-110, -70, 20, 90, 160);
+          break;
         case 8:
+          // Diamond: d8
+          angles.push(0, 90, 180, 270);
+          break;
         case 10:
         case 100:
+          // Flattened diamond: d10, d100
           angles.push(0, 90, 180, 270);
           break;
         case 12:
+          // Pointed pentagon: d12
           angles.push(-90, -18, 54, 126, 198);
           break;
+        case 14:
+          // Narrower-looking, irregularly spaced octagon: d14
+          angles.push(-90, -60, -30, 30, 90, 150, 210, 240);
+          break;
+        case 16:
+          // Regular octagon with a flat top: d16
+          angles.push(
+            -67.5, -22.5,
+            22.5, 67.5,
+            112.5, 157.5,
+            202.5, 247.5
+          );
+          break;
         case 20:
-        default:
+          // Hexagon: d20
           angles.push(-90, -30, 30, 90, 150, 210);
+          break;
+        case 24:
+          // Clipped-corner square-like octagon: d24
+          angles.push(31, 59, 121, 149, 211, 239, 301, 329);
+          break;
+        case 30:
+          // Decagon: d30
+          angles.push(-90, -54, -18, 18, 54, 90, 126, 162, 198, 234);
+          break;
+        default:
+          // Default should look like d100
+          angles.push(
+            -90, -65, -17, 7, 58,
+            80, 137, 174, 224
+          );
           break;
       }
     } else if (this.type === "fudge") {
@@ -217,7 +327,7 @@ export class DiceWidgetBase implements BaseWidget {
       attr: {
         d: `M${points.join("L")}Z`,
         "stroke-linejoin": "round",
-        "stroke-width": 5,
+        "stroke-width": Math.max(3, Math.round(this.size * 0.12)),
         stroke: "currentColor",
         fill: "currentColor",
       },
@@ -248,6 +358,7 @@ export class DiceWidgetBase implements BaseWidget {
     ]
       .filter(identity)
       .join("");
+
     setTooltip(this.el, sizeText, { delay: 0 });
 
     if (this.explicit) {
@@ -264,6 +375,7 @@ export class DiceWidgetBase implements BaseWidget {
 
     const diceEl = this.el.createEl("span");
     diceEl.classList.add("srt-dice-btn-container");
+    diceEl.style.width = `${this.size}px`;
 
     this.svgEl = diceEl.createSvg("svg", {
       cls: "srt-dice-svg",
@@ -279,121 +391,123 @@ export class DiceWidgetBase implements BaseWidget {
     this.valueEl.classList.add("clickable-icon", "srt-dice-btn");
     this.updateValue();
 
-    const menu = createMenu([
-      {
-        title: "Roll",
-        disabled: this.disabled,
-        onClick: () => {
-          rollLock = true;
-          setTimeout(reroll, rollIntervals[i]);
-          setTimeout(() => {
-            rollLock = false;
-          }, 320);
+    const showMenu = (event: MouseEvent) => {
+      createMenu([
+        {
+          title: "Roll",
+          disabled: this.disabled,
+          onClick: () => {
+            rollLock = true;
+            setTimeout(reroll, rollIntervals[i]);
+            setTimeout(() => {
+              rollLock = false;
+            }, 320);
+          },
         },
-      },
-      "-",
-      {
-        title: "Color",
-        subMenu: [
-          {
-            title: "Default",
-            checked: this.color === "",
-            onClick: () => {
-              this.color = "";
-              onChange?.();
+        "-",
+        {
+          title: "Color",
+          subMenu: [
+            {
+              title: "Default",
+              checked: this.color === "",
+              onClick: (event) => {
+                this.color = "";
+                onChange?.(event);
+              },
             },
-          },
-          ...KNOWN_COLORS.map((color) => ({
-            title: capitalize(color),
-            checked: this.color === color,
-            onClick: () => {
-              this.color = color;
-              onChange?.();
-            },
-          })),
-        ],
-      },
-      {
-        title: "Size",
-        subMenu: [
-          {
-            title: "Default",
-            checked: this.size === SIZE_DEFAULT,
-            onClick: () => {
-              this.size = SIZE_DEFAULT;
-              onChange?.();
-            },
-          },
-          {
-            title: "Small",
-            checked: this.size === SIZE_SMALL,
-            onClick: () => {
-              this.size = SIZE_SMALL;
-              onChange?.();
-            },
-          },
-          {
-            title: "Large",
-            checked: this.size === SIZE_LARGE,
-            onClick: () => {
-              this.size = SIZE_LARGE;
-              onChange?.();
-            },
-          },
-          "-",
-          {
-            title: "Increase",
-            onClick: () => {
-              this.size += 8;
-              onChange?.();
-            },
-          },
-          {
-            title: "Decrease",
-            onClick: () => {
-              this.size -= 8;
-              onChange?.();
-            },
-          },
-        ],
-      },
-      {
-        title: "Show dice",
-        checked: this.explicit,
-        onClick: () => {
-          this.toggleExplicit();
-          onChange?.();
+            ...KNOWN_COLORS.map((color) => ({
+              title: capitalize(color),
+              checked: this.color === color,
+              onClick: (event: MouseEvent) => {
+                this.color = color;
+                onChange?.(event);
+              },
+            })),
+          ],
         },
-      },
-      {
-        title: "Lock",
-        checked: this.disabled,
-        onClick: () => {
-          this.toggleDisable();
-          onChange?.();
+        {
+          title: "Size",
+          subMenu: [
+            {
+              title: "Default",
+              checked: this.size === SIZE_DEFAULT,
+              onClick: (event) => {
+                this.size = SIZE_DEFAULT;
+                onChange?.(event);
+              },
+            },
+            {
+              title: "Small",
+              checked: this.size === SIZE_SMALL,
+              onClick: (event) => {
+                this.size = SIZE_SMALL;
+                onChange?.(event);
+              },
+            },
+            {
+              title: "Large",
+              checked: this.size === SIZE_LARGE,
+              onClick: (event) => {
+                this.size = SIZE_LARGE;
+                onChange?.(event);
+              },
+            },
+            "-",
+            {
+              title: "Increase",
+              onClick: (event) => {
+                this.size += 8;
+                onChange?.(event);
+              },
+            },
+            {
+              title: "Decrease",
+              onClick: (event) => {
+                this.size -= 8;
+                onChange?.(event);
+              },
+            },
+          ],
         },
-      },
-      onFocus ? "-" : undefined,
-      onFocus
-        ? {
+        {
+          title: "Show dice",
+          checked: this.explicit,
+          onClick: (event) => {
+            this.toggleExplicit();
+            onChange?.(event);
+          },
+        },
+        {
+          title: "Lock",
+          checked: this.disabled,
+          onClick: (event) => {
+            this.toggleDisable();
+            onChange?.(event);
+          },
+        },
+        onFocus ? "-" : undefined,
+        onFocus
+          ? {
             title: "Edit",
             onClick: () => {
               onFocus();
             },
           }
-        : undefined,
-    ]);
+          : undefined,
+      ]).showAtMouseEvent(event);
+    };
 
     let i = 0;
-    const reroll = () => {
+    const reroll = (event: MouseEvent) => {
       this.roll();
 
       i++;
       if (rollIntervals[i]) {
-        setTimeout(reroll, rollIntervals[i] * 0.5);
+        setTimeout(() => reroll(event), rollIntervals[i] * 0.5);
       } else {
         i = 0;
-        onChange?.();
+        onChange?.(event);
         rollLock = false;
       }
     };
@@ -403,7 +517,7 @@ export class DiceWidgetBase implements BaseWidget {
       if (this.disabled) return;
       if (rollLock) return;
       rollLock = true;
-      setTimeout(reroll, rollIntervals[i]);
+      setTimeout(() => reroll(event), rollIntervals[i]);
       setTimeout(() => {
         rollLock = false;
       }, 320);
@@ -413,7 +527,7 @@ export class DiceWidgetBase implements BaseWidget {
       event.preventDefault();
       event.stopPropagation();
       if (rollLock) return;
-      menu.showAtMouseEvent(event);
+      showMenu(event);
     };
   }
 }

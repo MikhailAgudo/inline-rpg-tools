@@ -1,4 +1,5 @@
 import { syntaxTree } from "@codemirror/language";
+import { SyntaxNode } from "@lezer/common";
 import {
   RangeSetBuilder,
   EditorSelection,
@@ -20,6 +21,7 @@ import { TrackWidget, TRACK_REGEX } from "./track";
 import { ClockWidget, CLOCK_REGEX } from "./clock";
 import { DiceWidget, DICE_REGEX } from "./dice";
 import { SpaceWidget, SPACE_REGEX } from "./space";
+import { getInlineCodeSpan, isInlineCodeNode } from "./shared";
 import Plugin from "../../main";
 
 type BuildMeta = string;
@@ -28,7 +30,7 @@ let pluginRef: Plugin;
 
 // Live preview mode inline elements
 class TrackPlugin implements PluginValue {
-  decorations: DecorationSet;
+  decorations: DecorationSet = Decoration.none;
   previousBuildMeta: BuildMeta[] = [];
   spaceStore: Record<BuildMeta, number> = {};
   spaceStoreIndex: Record<number, number> = {};
@@ -42,7 +44,9 @@ class TrackPlugin implements PluginValue {
     const shouldDisable =
       !pluginRef?.settings?.inlineCounters || !isLivePreview;
     const shouldUpdate =
-      update.docChanged || update.viewportChanged || update.selectionSet;
+      update.docChanged ||
+      update.viewportChanged ||
+      (update.selectionSet && this.selectionAffectsWidgets(update));
 
     if (shouldDisable) {
       this.decorations = Decoration.none;
@@ -55,151 +59,170 @@ class TrackPlugin implements PluginValue {
   destroy() {}
 
   buildDecorations(view: EditorView) {
-    const builder = new RangeSetBuilder<Decoration>();
-    const buildMeta: BuildMeta[] = [];
+    type Candidate = {
+      from: number;
+      to: number;
+      node: SyntaxNode;
+      text: string;
+      meta: BuildMeta;
+      kind: "dice" | "count" | "countlimit" | "track" | "clock" | "space";
+    };
+    const candidates: Candidate[] = [];
     const selection = view.state.selection;
-
-    // For tabstop widget
-    let widgetIndex = 0;
+    const seenSpans = new Set<string>();
 
     for (const { from, to } of view.visibleRanges) {
       syntaxTree(view.state).iterate({
         from,
         to,
         enter: (node) => {
-          if (node.type.name !== "inline-code") return;
+          if (!isInlineCodeNode(node.type.name)) return;
 
-          const from = node.from - 1;
-          const to = node.to + 1;
+          const span = getInlineCodeSpan(view.state.doc, node.from, node.to);
+          const from = span.from;
+          const to = span.to;
+          const spanKey = `${from}:${to}`;
+          if (seenSpans.has(spanKey)) return;
+          seenSpans.add(spanKey);
 
           if (this.isRangeSelected(from, to, selection)) {
             return;
           }
 
-          const text = view.state.doc.sliceString(from, to).trim();
+          const text = span.text.trim();
           const meta = `${from}:${to}:${text}`;
 
-          // `d20`
-          if (DICE_REGEX.test(text)) {
-            buildMeta.push(meta);
-            builder.add(
-              from,
-              to,
-              Decoration.replace({
-                widget: new DiceWidget({
-                  originalNode: node.node,
-                  originalText: text,
-                }),
-              })
-            );
-          }
+          let kind: Candidate["kind"] | undefined;
+          if (DICE_REGEX.test(text)) kind = "dice";
+          else if (COUNT_REGEX.test(text)) kind = "count";
+          else if (COUNT_LIMIT_REGEX.test(text)) kind = "countlimit";
+          else if (TRACK_REGEX.test(text)) kind = "track";
+          else if (CLOCK_REGEX.test(text)) kind = "clock";
+          else if (SPACE_REGEX.test(text)) kind = "space";
 
-          // `3`
-          if (COUNT_REGEX.test(text)) {
-            buildMeta.push(meta);
-            builder.add(
-              from,
-              to,
-              Decoration.replace({
-                widget: new CountWidget({
-                  originalNode: node.node,
-                  originalText: text,
-                }),
-              })
-            );
-          }
-
-          // `1/6`
-          if (COUNT_LIMIT_REGEX.test(text)) {
-            buildMeta.push(meta);
-            builder.add(
-              from,
-              to,
-              Decoration.replace({
-                widget: new CountLimitWidget({
-                  originalNode: node.node,
-                  originalText: text,
-                }),
-              })
-            );
-          }
-
-          // `boxes:1/10`
-          if (TRACK_REGEX.test(text)) {
-            buildMeta.push(meta);
-            builder.add(
-              from,
-              to,
-              Decoration.replace({
-                widget: new TrackWidget({
-                  originalNode: node.node,
-                  originalText: text,
-                }),
-              })
-            );
-          }
-
-          // `clock:1/6` / `smclock: 1/6`
-          if (CLOCK_REGEX.test(text)) {
-            buildMeta.push(meta);
-            builder.add(
-              from,
-              to,
-              Decoration.replace({
-                widget: new ClockWidget({
-                  originalNode: node.node,
-                  originalText: text,
-                }),
-              })
-            );
-          }
-
-          // ` `
-          if (SPACE_REGEX.test(text)) {
-            const thisWidgetIndex = widgetIndex;
-            buildMeta.push(meta);
-            builder.add(
-              from,
-              to,
-              Decoration.replace({
-                widget: new SpaceWidget({
-                  originalNode: node.node,
-                  originalText: text,
-                  initialWidth:
-                    this.spaceStore[meta] ||
-                    this.spaceStoreIndex[thisWidgetIndex] ||
-                    0,
-                  updateInitialWidth: (width: number) => {
-                    this.spaceStore[meta] = width;
-                    this.spaceStoreIndex[thisWidgetIndex] = width;
-                  },
-                }),
-              })
-            );
-            widgetIndex++;
+          if (kind) {
+            candidates.push({
+              from: node.from,
+              to: node.to,
+              node: node.node,
+              text,
+              meta,
+              kind,
+            });
           }
         },
       });
     }
 
+    const buildMeta = candidates.map(({ meta, kind }) =>
+      kind === "track"
+        ? `${meta}:highlight=${pluginRef?.settings?.inlineProgressHighlight ?? true}`
+        : meta,
+    );
     if (!this.isMetaChanged(buildMeta)) return;
     this.previousBuildMeta = buildMeta;
 
+    const builder = new RangeSetBuilder<Decoration>();
+    let widgetIndex = 0;
+    for (const candidate of candidates) {
+      const { node, text, kind, meta, from, to } = candidate;
+      let widget;
+      switch (kind) {
+        case "dice":
+          widget = new DiceWidget({ originalNode: node, originalText: text });
+          break;
+        case "count":
+          widget = new CountWidget({ originalNode: node, originalText: text });
+          break;
+        case "countlimit":
+          widget = new CountLimitWidget({ originalNode: node, originalText: text });
+          break;
+        case "track":
+          widget = new TrackWidget({
+            originalNode: node,
+            originalText: text,
+            highlight: pluginRef?.settings?.inlineProgressHighlight ?? true,
+          });
+          break;
+        case "clock":
+          widget = new ClockWidget({ originalNode: node, originalText: text });
+          break;
+        case "space": {
+          const thisWidgetIndex = widgetIndex++;
+          widget = new SpaceWidget({
+            originalNode: node,
+            originalText: text,
+            initialWidth:
+              this.spaceStore[meta] || this.spaceStoreIndex[thisWidgetIndex] || 0,
+            updateInitialWidth: (width: number) => {
+              this.spaceStore[meta] = width;
+              this.spaceStoreIndex[thisWidgetIndex] = width;
+            },
+          });
+          break;
+        }
+      }
+      builder.add(from, to, Decoration.replace({ widget }));
+    }
+
     this.decorations = builder.finish();
+  }
+
+  selectionAffectsWidgets(update: ViewUpdate): boolean {
+    const selections = [update.startState.selection, update.state.selection];
+    for (const meta of this.previousBuildMeta) {
+      const [fromText, toText] = meta.split(":", 3);
+      const from = Number(fromText);
+      const to = Number(toText);
+      if (
+        selections.some((selection) =>
+          this.isRangeSelected(from, to, selection),
+        )
+      ) {
+        return true;
+      }
+    }
+
+    for (const state of [update.startState, update.state]) {
+      let affected = false;
+      const selection = state.selection;
+      for (const { from, to } of update.view.visibleRanges) {
+        syntaxTree(state).iterate({
+          from,
+          to,
+          enter: (node) => {
+            if (affected || !isInlineCodeNode(node.type.name)) return;
+            const span = getInlineCodeSpan(state.doc, node.from, node.to);
+            const text = span.text.trim();
+            const isWidget =
+              DICE_REGEX.test(text) ||
+              COUNT_REGEX.test(text) ||
+              COUNT_LIMIT_REGEX.test(text) ||
+              TRACK_REGEX.test(text) ||
+              CLOCK_REGEX.test(text) ||
+              SPACE_REGEX.test(text);
+            if (isWidget && this.isRangeSelected(span.from, span.to, selection)) {
+              affected = true;
+            }
+          },
+        });
+        if (affected) return true;
+      }
+    }
+    return false;
   }
 
   isRangeSelected(
     from: number,
     to: number,
-    selection: EditorSelection
+    selection: EditorSelection,
   ): boolean {
     return !!selection.ranges.find(
-      (range: SelectionRange) => range.from <= to && range.to >= from
+      (range: SelectionRange) => range.from <= to && range.to >= from,
     );
   }
 
   isMetaChanged(buildMeta: BuildMeta[]): boolean {
-    if (!buildMeta.length || !this.previousBuildMeta.length) return true;
     if (buildMeta.length !== this.previousBuildMeta.length) return true;
     for (const index in buildMeta) {
       if (buildMeta[index] !== this.previousBuildMeta[index]) return true;

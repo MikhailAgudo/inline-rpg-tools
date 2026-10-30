@@ -1,4 +1,3 @@
 export * from "./dice";
-export * from "./deck";
-export * from "./word";
+export * from "./plugin";
 export * from "./helpers";

@@ -1,31 +1,31 @@
 import { SyntaxNode } from "@lezer/common";
 import { EditorView, WidgetType } from "@codemirror/view";
 import { ClockWidgetBase, CLOCK_REGEX } from "../base";
-import { focusOnNode } from "./shared";
+import { focusOnNode, replaceInlineCode } from "./shared";
 
 export { CLOCK_REGEX };
 
 export class ClockWidget extends WidgetType {
   base: ClockWidgetBase;
   node: SyntaxNode;
+  originalText: string;
 
   constructor(opts: { originalNode: SyntaxNode; originalText: string }) {
     super();
 
     this.base = new ClockWidgetBase(opts);
     this.node = opts.originalNode;
+    this.originalText = opts.originalText;
+  }
+
+  eq(widget: ClockWidget): boolean {
+    const equal = this.originalText === widget.originalText;
+    if (equal) this.node = widget.node;
+    return equal;
   }
 
   updateDoc(view: EditorView) {
-    view.dispatch({
-      changes: [
-        {
-          from: this.node.from,
-          to: this.node.to,
-          insert: this.base.getText(),
-        },
-      ],
-    });
+    replaceInlineCode(view, this.node, (wrap) => this.base.getText(wrap));
   }
 
   toDOM(view: EditorView): HTMLElement {

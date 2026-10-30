@@ -23,11 +23,14 @@ export class TrackWidgetBase implements BaseWidget {
   max: number;
   color: string;
   size: number;
+  highlight: boolean;
 
   el: HTMLElement;
   btnEls: HTMLElement[];
 
-  constructor(opts: { originalText: string }) {
+  constructor(opts: { originalText: string; highlight: boolean }) {
+    this.highlight = opts.highlight;
+
     this.parseValue(opts.originalText);
 
     if (this.max < MIN_MAX) this.max = MIN_MAX;
@@ -151,35 +154,39 @@ export class TrackWidgetBase implements BaseWidget {
   generateDOM({ onFocus, onChange }: DomOptions) {
     this.el = document.createElement("span");
     this.el.classList.add("srt-track");
+    if (this.highlight) {
+      this.el.classList.add("srt-track-highlight");
+    }
 
-    const menu = createMenu([
+    const showMenu = (event: MouseEvent) => {
+      createMenu([
       {
         title: "Advance",
-        onClick: () => {
+        onClick: (event) => {
           this.addValue(1);
-          onChange?.();
+          onChange?.(event);
         },
       },
       {
         title: "Subtract",
-        onClick: () => {
+        onClick: (event) => {
           this.addValue(-1);
-          onChange?.();
+          onChange?.(event);
         },
       },
       "-",
       {
         title: "Fill",
-        onClick: () => {
+        onClick: (event) => {
           this.setValueTo(this.max);
-          onChange?.();
+          onChange?.(event);
         },
       },
       {
         title: "Reset",
-        onClick: () => {
+        onClick: (event) => {
           this.setValueTo(0);
-          onChange?.();
+          onChange?.(event);
         },
       },
       "-",
@@ -189,17 +196,17 @@ export class TrackWidgetBase implements BaseWidget {
           {
             title: "Default",
             checked: this.color === "",
-            onClick: () => {
+            onClick: (event) => {
               this.color = "";
-              onChange?.();
+              onChange?.(event);
             },
           },
           ...KNOWN_COLORS.map((color) => ({
             title: capitalize(color),
             checked: this.color === color,
-            onClick: () => {
+            onClick: (event: MouseEvent) => {
               this.color = color;
-              onChange?.();
+              onChange?.(event);
             },
           })),
         ],
@@ -210,40 +217,40 @@ export class TrackWidgetBase implements BaseWidget {
           {
             title: "Default",
             checked: this.size === SIZE_DEFAULT,
-            onClick: () => {
+            onClick: (event) => {
               this.size = SIZE_DEFAULT;
-              onChange?.();
+              onChange?.(event);
             },
           },
           {
             title: "Small",
             checked: this.size === SIZE_SMALL,
-            onClick: () => {
+            onClick: (event) => {
               this.size = SIZE_SMALL;
-              onChange?.();
+              onChange?.(event);
             },
           },
           {
             title: "Large",
             checked: this.size === SIZE_LARGE,
-            onClick: () => {
+            onClick: (event) => {
               this.size = SIZE_LARGE;
-              onChange?.();
+              onChange?.(event);
             },
           },
           "-",
           {
             title: "Increase",
-            onClick: () => {
+            onClick: (event) => {
               this.size += 8;
-              onChange?.();
+              onChange?.(event);
             },
           },
           {
             title: "Decrease",
-            onClick: () => {
+            onClick: (event) => {
               this.size -= 8;
-              onChange?.();
+              onChange?.(event);
             },
           },
         ],
@@ -254,17 +261,17 @@ export class TrackWidgetBase implements BaseWidget {
           {
             title: "Box",
             checked: this.shape === "boxes",
-            onClick: () => {
+            onClick: (event) => {
               this.shape = "boxes";
-              onChange?.();
+              onChange?.(event);
             },
           },
           {
             title: "Circle",
             checked: this.shape === "circles",
-            onClick: () => {
+            onClick: (event) => {
               this.shape = "circles";
-              onChange?.();
+              onChange?.(event);
             },
           },
         ],
@@ -272,13 +279,14 @@ export class TrackWidgetBase implements BaseWidget {
       onFocus ? "-" : undefined,
       onFocus
         ? {
-            title: "Edit",
-            onClick: () => {
-              onFocus();
-            },
-          }
+          title: "Edit",
+          onClick: () => {
+            onFocus();
+          },
+        }
         : undefined,
-    ]);
+      ]).showAtMouseEvent(event);
+    };
 
     this.btnEls = [];
     for (let i = 0; i < this.max; i++) {
@@ -288,13 +296,13 @@ export class TrackWidgetBase implements BaseWidget {
       btnEl.classList.add(
         "clickable-icon",
         "srt-track-btn",
-        `srt-track-${this.shape}`
+        `srt-track-${this.shape}`,
       );
       btnEl.onclick = (event) => {
         event.preventDefault();
         event.stopPropagation();
         this.setValue(i);
-        onChange?.();
+        onChange?.(event);
       };
       setTooltip(btnEl, (i + 1).toString(), { delay: 0 });
       this.btnEls.push(btnEl);
@@ -303,7 +311,7 @@ export class TrackWidgetBase implements BaseWidget {
     this.el.oncontextmenu = (event) => {
       event.preventDefault();
       event.stopPropagation();
-      menu.showAtMouseEvent(event);
+      showMenu(event);
     };
 
     this.updateButtons();
